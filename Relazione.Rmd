@@ -1,0 +1,596 @@
+---
+title: "Analisi vendite videogiochi"
+author: "Alex Viel"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readr)
+library(stringr)
+library(tidyr)
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(tidytext)
+library(gganimate)
+library(gifski)
+vgsales = read_csv("vgsales.csv")
+consoleCompanies = read_rds("consoleCompanies.rds")
+publisherNation <- read_rds("publisherNation.rds")
+
+# Dati nella storia (1980 - 2016)
+# Questo dataframe raggruppa in base al nome del videogioco e ricava le vendite totali delle copie distribuite tra più console
+# Es: GTA V compare 5 volte nel dataframe (PC, XBOX360, XBOX ONE, PS3, PS4)
+vgsalesTot <- vgsales %>% 
+              group_by(Name) %>% 
+              summarise(Total_NA = sum(NA_Sales), Total_EU = sum(EU_Sales), 
+                        Total_JP = sum(JP_Sales), Total_Other = sum(Other_Sales), Total_Sales = sum(Global_Sales)) 
+
+# Il dataframe di prima contiene solo il nome e le vendite totali quindi facciamo il join tra quello e il dataframe originale in modo
+# da avere le informazioni complete
+vgsalesTot <- inner_join(vgsales, vgsalesTot) %>% 
+              distinct(Name, .keep_all=TRUE)  %>%
+              arrange(-Total_Sales) %>%
+              select(Name, Genre, Platform, Year, Publisher, Total_NA, Total_EU, Total_JP, Total_Other, Total_Sales)
+vgsalesTot %>% print(n=30)
+
+```
+
+## Introduzione
+
+Come in ogni ambito esistente del genere umano, ci capita di competere a livello di tifoseria su risultati non nostri personali ma compiuti da qualcun'altra persona o azienda.<br />
+Di questi ambiti, a livello quotidiano, possiamo riconoscere per esempio il calcio, la politica e i videogiochi. Proprio su quest'ultima categoria si basa questa analisi dei dati.<br />
+Guardando un qualsiasi forum, gruppo o pagina sui social è normale vedere l'utenza divisa in fazioni quasi sempre in guerra tra loro.
+
+Al giorno d'oggi queste fazioni sono divise in base alla propria console preferita:
+
+- I PC Master Race: l'utenza che preferisce il PC come piattaforma di gioco
+
+- I Nintendari: l'utenza che preferisce le console Nintendo
+
+- I Sonari: l'utenza che preferisce le console Sony
+
+- I Boxari: l'utenza che preferisce le console Microsoft
+
+Una prima domanda che viene spontanea è: qual'è la fazione vincitrice tra queste quattro?
+
+## Il dataframe utilizzato
+
+Per rispondere a questa e alle domande che vedremo successivamente verrà utilizzato il dataframe "Video Game Sales" realizzato da GregorySmith.
+
+Link: https://www.kaggle.com/gregorut/videogamesales
+
+```{r vgsalesShow, echo=FALSE, message=FALSE, warning = FALSE}
+vgsales
+```
+
+Questo dataframe contiene tutte le informazioni legate alle vendite di videogiochi messi in vendita tra il 1980 e la prima metà del 2016 quali l'anno di uscita, la piattaforma di uscita e il numero di vendite nei tre mercati principali (Nord America, Unione Europea e Giappone)
+
+Per ampliare le informazioni verrano utilizzati due piccoli dataframe creati apposta per questa analisi:
+
+- consoleCompanies: ci fornisce il nome della compagnia produttrice di quella determinata console
+
+- publisherNation: ci fornisce la nazionalità dell'azienda distributrice di uno più videogiochi
+
+Nota importante: publisherNation è un dataframe incompleto. E' impossibile riuscire a risalire alle informazioni di tutte le aziende distributrici su Internet, in particolar modo di quelle che hanno realizzato videgiochi esclusivamente negli anni 80 oppure quelle con nomi ambigui o troppo comuni, decretando l'impossibilità trovare la loro nazionalità.
+
+## Glossario
+
+Prima di iniziare diamo una spiegazione sui termini che vedremo durante l'analisi:
+
+- Platform (Piattaforma): la console dove è stato rilasciato quel determinato videogioco
+
+- Console war: guerra economica tra due o più aziende produttrici di console. Questa guerra spinge l'utenza a difendere la console che ha acquistato e a disprezzare o insultare la console rivale e chi l'ha comprata. La console war può essere paragonata alla rivalità tra due squadre di calcio della stessa città o regione. 
+
+- Genere: la tipologia del gioco. Come vedremo durante l'analisi ne esistono diversi:
+
+    - Action (Azione): categoria molto vasta che include videogiochi basati sulla prontezza di riflessi e sull'agilità con i comandi. Sono in genere ricchi di combattimenti anche se includono titoli in cui l'agilità serve ad evitare pericoli d'altro genere.
+        - Es: Grand Theft Auto, The Legend of Zelda
+    - Adventure (Avventura): videogiochi caratterizzati da una forte componente esplorativa e narrativa. In genere sono basati sulla risoluzione di enigmi piuttosto che sulla prontezza di riflessi.
+        - Es: Assasin's Creed
+    - Fighting (Picchiaduro): videogiochi incentrati sul combattimento a mani nude o tramite armi bianche contro uno o più avversari
+        - Es: Street Fighter, Tekken
+    - Misc (Vario): videogiochi che non appartengono ad un genere specifico. Tipicamente videogiochi di questo genere sono raccolte di minigiochi.
+        - Es: Wii Play, Guitar Hero, Minecraft
+    - Platform (Piattaforme): incentrato prevalentemente sul superamento di ostacoli disposti nello scenario, con dinamiche molto stilizzate. Elemento fondante nel genere è la capacità del personaggio di saltare da una piattaforma all'altra (da cui il nome).
+        - Es: Super Mario, Sonic The Hedgehog
+    - Puzzle: videogiochi basati su uno o più enigmi che mettono alla prova l'ingegno e il ragionamento del giocatore. Molti altri generi includono la risoluzione di puzzle, ma questo tipo di giochi ne fanno il fulcro dell'esperienza.
+        - Es: Tetris, Pacman
+    - Racing (di corsa): il giocatore deve pilotare un veicolo, ad esempio auto o moto, in una gara per battere gli avversari umani o l'intelligenza artificiale.
+        - Es: Gran Turismo, Need for speed
+    - Role-Playing (di ruolo): videogiochi che riprendono gli elementi tipici dei giochi di ruolo con carta e penna alla Dungeons & Dragons: importante componente narrativa, interpretazione e sviluppo di uno o più personaggi, ruoli e classi diversificati in combattimento.
+        - Es: Pokémon, Final Fantasy
+    - Shooter (Sparatutto): incentrati sul colpire dei nemici/bersagli a distanza, con armi di varia natura (quasi sempre da fuoco).
+        - Es: Call of Duty, Battlefield, Halo
+    - Simulation (Simulazione): simulano un aspetto della realtà che possa intrattenere il giocatore richiedendo un misto di strategia, fortuna, abilità. Categoria molto ampia e differenziata che spazia dalla simulazione di guida di veicoli alla simulazione economica, alla simulazione di rapporti sociali.
+        - Es: The Sims, Animal Crossing, Microsoft Flight Simulator
+    - Sports (Sportivi): videogiochi che simulano discipline sia di squadra che individuali in cui il giocatore prende attivamente il controllo degli atleti/piloti durante le competizioni.
+        - Es: FIFA, Pro Evolution Soccer, Madden
+    - Strategy (Strategia): videogiochi in cui le decisioni di un giocatore hanno un grande impatto sul risultato. Il giocatore è incaricato della microgestione, di unità ed abilità durante i combattimenti, oltre che una parte gestionale-economica di macrogestione. La componente strategica può essere più o meno marcata in favore di una componente casuale.
+        - Es: Sid Meier's Civilization, Starcraft
+
+## Domanda n.1 : La compagnia di maggiore successo
+
+Torniamo alla domanda lasciata in sospeso in precedenza: 
+
+- Qual'è la fazione vincitrice tra PC, Sony, Microsoft e Nintendo?
+
+```{r vgsales, message=FALSE, warning = FALSE}
+vgsalesPlatform <- vgsales %>% 
+                   group_by(Platform) %>% 
+                   summarise(Total_Sales = sum(Global_Sales))
+
+vgsalesPlatform <- inner_join(vgsales, vgsalesPlatform) %>% 
+                   select(Platform,Total_Sales) %>% 
+                   distinct(Platform, .keep_all=TRUE) %>% 
+                   arrange(-Total_Sales)
+
+inner_join(vgsalesPlatform, consoleCompanies) %>%
+  group_by(Company) %>%
+  summarise(Total_Sales = sum(Total_Sales)) %>%
+  arrange(-Total_Sales) %>%
+  ggplot(aes(x=reorder(Company,-Total_Sales), y=Total_Sales, fill = Company)) + 
+    geom_bar(stat="identity",position = "dodge") +
+    theme(legend.position = "none",axis.title = element_blank()) +
+    labs(title = 'Classifica produttori di console')
+```
+
+Possiamo notare che tra le compagnie produttrici di console, la vincitrice risulti Sony.
+
+Analizziamo la classifica:
+
+- Il primo posto di Sony è abbastanza prevedibile se pensiamo all'enorme successo delle prime due Playstation, con vendite di tutto rispetto anche dopo 20-25 anni dalla loro uscita. 
+
+- Neanche la seconda posizione di Nintendo stupisce in quanto, oltre ad aver prodotto due tra le console di maggior successo (il DS e la Wii), è anche proprietaria di diverse serie di videogiochi tra le più reddittizie e di successo.
+
+- Microsoft invece è in un certo senso la più deludente tra le tre compagnie. Questo è dovuto al fatto che non è mai risultata la vera vincitrice di una console war. Nonostante un inizio buono con la prima Xbox e un ottimo periodo vendite tra il 2006 e il 2010 con la XBOX360, Microsoft non è mai riuscita a battere la sua rivale principale Sony, sopratutto nell'ultima generazione di console dove la Playstation 4 ha praticamente gareggiato da sola a causa di cattive scelte di marketing della XBOX One.
+
+- Nonostante il PC sia una piattaforma che non appartiene a nessuna compagnia e che quindi non possiede modelli specifici, non ha lo stesso volume di vendite delle console.<br />
+Questo potrebbe dipendere dal diverso tipo di utenza rispetto alle console.<br />
+Sin dagli anni 90 su PC sono usciti oltre ai videogiochi normali, dei videogiochi che espandevano un gioco già esistente chiamate espansioni. Non a caso proprio alcuni dei videogiochi di maggior successo su PC hanno sfruttato questo tipo di scelta. Sebbene redditizio, il mercato delle espansioni non è contato tra le vendite facendo quindi risultare inferiori le vendite su PC.<br />
+Altro lato che differenzia il PC dalle console, è l'utilizzo, grazie a internet, di videogiochi ad abbonamento: questi non vendono una copia nel senso tradizionale del termine, ma vendono un abbonamento per un periodo di tempo, generalmente un anno. Questo motivo fa si che ci siano meno titoli PC nella lista.<br />
+E' da fare però una precisazione: con l'avvento delle connessioni internet su console (dal 2005-2006), questa tipologia di vendita è approdata anche su di esse facendo conoscere anche alle console queste problematiche.
+
+- Atari e Sega non hanno un grosso volume di vendite in quanto produttrici di console in un periodo dove i videogiochi erano un passatempo di nicchia. In particolar modo Sega ha avuto un piccolo numero di vendite a causa della forte concorrenza di Sony con la prima Playstation causandone l'uscita l'uscita dal mondo delle console.
+
+- SNK, Bandai, Nec e Panasonic hanno tentato di produrre la propria console ma senza alcun successo.
+
+Una nota finale su Sega, SNK e Bandai: nonostante queste tre aziende possiedono un piccolo numero di vendite di videogiochi sulle proprie console, rimangono tutt'oggi importanti nell'ambito videoludico in quanto produttrici di cabinati e videogiochi da sala giochi (esulando quindi da questa analisi). Questo ambito, sopratutto in Giappone, rimane tutt'oggi redditizio e fonte della maggior parte dei guadagni di queste tre aziende.
+
+Infine ecco l'evoluzione delle vendite di tutte le console nel corso degli anni.
+
+```{r consoleHistroy, echo=FALSE, message=FALSE, warning=FALSE}
+vgsalesAnni <- vgsales %>%
+  filter(Year <= 2016) %>%
+  group_by(Platform, Year) %>%
+  summarize(Global_Sales = sum(Global_Sales)) %>%
+  spread(key = Year, Global_Sales)
+
+vgsalesAnni[is.na(vgsalesAnni)] <- 0
+
+range <- 3:length(1981:2018)
+for(anno in range)
+  vgsalesAnni[,anno] <- vgsalesAnni[,anno] + vgsalesAnni[,anno-1]
+
+vgsalesAnni <- vgsalesAnni %>%
+  gather('1980','1981','1982','1983','1984','1985','1986','1987','1988','1989','1990','1991','1992','1993','1994','1995','1996','1997','1998','1999','2000','2001','2002','2003','2004','2005','2006','2007','2008','2009','2010','2011','2012','2013','2014','2015','2016',key = 'Year', value = 'Global_Sales')
+
+
+vgsalesAnniTemp <- vgsalesAnni %>%
+  group_by(Year) %>%
+  mutate(Rank = rank(-Global_Sales),
+                     Value_rel = Global_Sales/Global_Sales[Rank==1],
+                     Value_lbl = paste0(" ",round(Global_Sales/1e9)))  %>%
+  filter(Rank <= 5)
+
+p <- vgsalesAnniTemp %>%
+  ggplot(aes(x = Value_rel, y = -Rank, fill = Platform)) +
+  geom_bar(stat="identity") +
+  transition_states(
+    Year,
+    transition_length = 4,
+    state_length = 1
+  ) +
+  geom_text(aes(-Rank,x=0,label = Platform,hjust=0)) +
+  geom_text(aes(-Rank,x=Value_rel,label = round(Global_Sales), hjust=0)) +
+  theme(legend.position = "none",axis.title = element_blank()) +
+  labs(title = 'Vendite nell\' anno {closest_state}')
+
+animate(p,100, fps = 25, duration = 20, width = 800, height = 600)
+
+```
+
+## Domanda n.2 : USA vs Giappone - la nazione di maggior successo
+
+Abbiamo visto come Sony e Nintendo dominino il panorama delle vendite di console, lasciando Microsoft "a bocca asciutta". <br />
+Questo ci farebbe credere che il panorama videoludico sia dettato principalmente dal Giappone. Sarà vero?
+
+```{r vgpublisher, message=FALSE, warning = FALSE}
+vgsalesPublisher <- vgsales %>% 
+                    group_by(Publisher) %>% 
+                    summarise(Total_Sales = sum(Global_Sales))
+
+vgsalesPublisher <- inner_join(vgsales, vgsalesPublisher) %>% 
+                    select(Publisher,Total_Sales) %>% 
+                    distinct(Publisher, .keep_all=TRUE) %>% 
+                    arrange(-Total_Sales)
+
+publisherNation <- inner_join(vgsalesPublisher, publisherNation)
+
+publisherNation %>%
+  filter(Nation != "NA") %>%
+  group_by(Nation) %>%
+  summarise(Total_Sales = sum(Total_Sales)) %>%
+  arrange(-Total_Sales) %>%
+  ggplot(aes(x=reorder(Nation,-Total_Sales), y=Total_Sales, fill = Nation)) + geom_bar(stat="identity",position = "dodge") +
+  theme(legend.position = "none",axis.title = element_blank()) + 
+  scale_fill_manual("legend", values = c("Japan" = "gray", "USA" = "lightblue", "France" = "darkblue", "UK" = "red", "Italy" = "darkgreen", "Germany" = "Black", "Canada" = "red", "Poland" = "red", "Sweden" = "blue", "Denmark" = "red")) +
+  labs(title = 'Influenza di una nazione nel panorama videoludico')
+
+```
+
+Dal grafico, possiamo vedere il numero di copie vendute dai publisher di una certa nazione. <br />
+Nota: I distaccamenti delle aziende in una nazione diversa dalla sede centrale vengono considerate della stessa nazione della casa madre. Esempio: Ubisoft è francese, Ubisoft Motreal è in Canada ma nell'analisi verrà considerata francese.
+
+In particolar modo possiamo notare come il Giappone effetivamente sia la nazione più influente nel panorama videoludico con gli Stati Uniti al secondo posto.
+
+E' però necessario fare una precisazione: non è detto che la nazionalità del publisher coincida con quella dello sviluppatore, in particolare non è raro trovare un publisher americano che si occupa della distribuzione di un videogioco realizzato in un altra nazione.<br />
+Questo è invece più raro in Giappone, infatti, salvo qualche eccezione, i videogiochi giapponesi vengono distrubiti da publisher giapponesi.<br />
+
+Questo non fa altro che rafforzare la posizione del Giappone rendendolo quindi, come ipotizzavamo, il leader del mondo videoludico.
+
+Dal grafico sembrebbe che Italia e Germania abbiano una situazione simile tra loro. Analizziamola:
+
+```{r italyGermany, message=FALSE, warning = FALSE}
+publisherNation <- inner_join(vgsalesPublisher, publisherNation)
+
+publisherNation %>%
+  filter(Nation != "NA") %>%
+  group_by(Nation) %>%
+  summarise(Total_Sales = sum(Total_Sales)) %>%
+  arrange(-Total_Sales) %>%
+  filter(Nation == "Italy" | Nation == "Germany") %>%
+  ggplot(aes(x=reorder(Nation,-Total_Sales), y=Total_Sales, fill = Nation)) + geom_bar(stat="identity",position = "dodge") +
+  theme(legend.position = "none",axis.title = element_blank()) + 
+  scale_fill_manual("legend", values = c("Italy" = "darkgreen", "Germany" = "Black")) +
+  labs(title = 'Publisher italiani VS Tedeschi')
+
+```
+
+Sembrerebbe che tra le due, l'Italia, sia la vincitrice. In realtà di aziende sviluppatrici italiane ce ne sono poche mentre la Germania possiede molti piccoli studi di sviluppo.
+
+Il motivo che ha penalizzato gli americani in questo ambito, ovvero la diversa nazionalità tra svilupattori e publisher, ha avvantaggiato l'Italia.
+In particolare la quasi totalità delle vendite italiane è stata fatta dalla 505 games, importante azienda che pubblica e distribuisce videogiochi sviluppati non solo in Italia, ma in tutto il mondo, mentre la Germania tende ad autopubblicare i propri videogiochi.
+
+Questo farebbe sembrare l'industria videoludica assente nel nostro paese. In realtà l'Italia possiede alcuni importanti distaccamenti di aziende straniere, primo tra tutti Ubisoft Milan. Inoltre vi sono diversi studi indipendenti italiani che hanno avuto la loro nascita in un periodo successivo a quello analizzato, ovvero dopo il 2016.
+
+## Domanda n.3 : quanto è importante il calcio per noi europei
+
+E' molto comune trovare su 4chan, la più nota board anonima sul web, nella sezione che tratta di videogiochi post dove vengono criticati da parte degli utenti americani i gusti di noi giocatori europei.<br /> 
+Periodicamente viene aperto un thread dove si discute delle classifiche di vendita dei videogiochi più venduti nell'ultima settimana in una certa nazione (tipicamente la classifica è inglese) dove c'è sempre almeno un post dove veniamo accusati di essere "sonari" e fanatici del calcio (ovviamente con un linguaggio non così forbito). Avrà ragione 4chan?
+
+Per rispondere a questa domanda, quindi, la divideremo in quattro sottodomande:
+
+- Qual'è il genere più venduto per continente?
+
+- Dove vengono venduti prevalentemente i giochi di calcio?
+
+- Gli europei preferiscono la Playstation o la XBox?
+
+- Qual'è il genere preferito dei giocatori Playstation europei?
+
+Partiamo con la prima domanda: Qual'è il genere più venduto per continente?
+
+```{r continentGenre, message=FALSE, warning = FALSE}
+# Raggruppiamo i videogiochi in base al genere e calcoliamo la somma di tutte le vendite
+# Vediamo le vendite totali per genere
+vgsalesGenre <- vgsales %>% 
+  group_by(Genre) %>% 
+  summarise(Total_NA = sum(NA_Sales), Total_EU = sum(EU_Sales), 
+            Total_JP = sum(JP_Sales), Total_Other = sum(Other_Sales), Total_Sales = sum(Global_Sales)) 
+
+# Eliminiamo le righe ripetute (inutili) e ordiniamo in base al numero di vendite decrescente
+vgsalesGenre <- inner_join(vgsales, vgsalesGenre) %>% 
+  select(Genre,Total_NA, Total_EU, Total_JP, Total_Other, Total_Sales) %>% 
+  distinct(Genre, .keep_all=TRUE) %>% 
+  arrange(-Total_Sales)
+
+# Attraverso il gather dividiamo le vendite per continente su più righe
+vgRegion <- vgsalesGenre %>%
+  gather("Total_NA","Total_EU","Total_JP","Total_Other", key = Market_Zone, value = Sales_Number)
+
+# Calcoliamo la percentuale delle vendite di un continente rispetto al totale
+vgRegion <- vgRegion %>% mutate(perc = Sales_Number/Total_Sales * 100)
+
+# Grafico che mostra gli interessi videoludici dei continenti
+vgRegion %>%
+  ggplot(aes(x=Genre, y=perc, fill = Market_Zone)) + geom_bar(stat="identity",position = "dodge") + 
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title = element_blank()) + 
+  scale_fill_discrete(name = "Mercato", labels = c("Europa", "Giappone", "Nord America", "Altro")) +
+  labs(title = 'Vendite in base al genere')
+
+```
+
+Possiamo notare come, con l'esclusione dei giochi di ruolo dove il Giappone ha il primato, il mercato è prevalentemente primeggiato dal Nord America, in particolare il genere sportivo. Questa osservazione da sola non ci può dire molto, in quanto esistono molti sport e altrettanti videogiochi sportivi. Bisognerà quindi analizzare in maniera più approfondita questo genere.
+
+Prima di fare ciò, però, possiamo notare l'omogeneità dei gusti europei e nord americani. Questi mercati tendono ad apprezzare tutti i generi più o meno alla stessa maniera.<br />
+Questo discorso non si può fare invece sul mercato giapponese. Da una parte abbiamo l'ottimo risultato dei giochi di ruolo, ma il pessimo degli sparatutto, mostrando quindi che nella terra del sol levante hanno dei gusti più selezionati.
+
+Ora passiamo alla seconda domanda: Dove vengono venduti prevalentemente i giochi di calcio?
+
+Per ottenere questi dati filtriamo tra i videogiochi sportivi quelli che contengono nel loro nome le stringhe "FIFA" o "Pro Evolution".<br />
+Questo viene fatto in quanto FIFA e Pro Evolution Soccer (PES) sono le due principali serie di videogiochi calcistici e raggrupparle ci farà capire quanto all'incirca è importante il calcio in Europa.<br />
+
+```{r soccer, message=FALSE, warning = FALSE}
+# I giochi sportivi hanno venduto di più in America, questo però non risponde alla nostra domanda: è così importante il calcio in Europa?
+# Mettiamo una variabile true se il gioco è di calcio (se contiene FIFA o PES nel nome)
+vgAux <- vgsalesTot %>% 
+  mutate(Calcio = ifelse(str_detect(Name, 'FIFA') | str_detect(Name, 'Pro Evolution'),"Calcio","Altri sport"))
+
+# Raggruppiamo tutti i giochi sportivi e sommiamo le loro vendite totali in base all'essere un gioco di calcio o meno
+vgAux <- vgAux%>%
+  filter(Genre=="Sports") %>%
+  group_by(Calcio) %>%
+  summarise(Total_NA = sum(Total_NA), Total_EU = sum(Total_EU), 
+            Total_JP = sum(Total_JP), Total_Other = sum(Total_Other), Total_Sales = sum(Total_Sales)) 
+
+# Come prima dividiamo le vendite per continente su più righe
+vgAux <- vgAux %>% 
+  gather("Total_NA","Total_EU","Total_JP","Total_Other", key = Market_Zone, value = Sales_Number) %>%
+  mutate(perc = Sales_Number/Total_Sales * 100)
+
+# Il grafico mostra che effettivamente quasi il 60% dei giochi di calcio sono venduti in Europa. Quindi si, siamo molto interessati al calcio
+vgAux %>%
+  ggplot(aes(x=Calcio, y=perc, fill = Market_Zone)) + geom_bar(stat="identity",position = "dodge") + 
+  theme(axis.title = element_blank()) +
+  scale_fill_discrete(name = "Mercato", labels = c("Europa", "Giappone", "Nord America", "Altro")) +
+  labs(title = 'Divisione vendite tra videogiochi sportivi')
+
+```
+
+Come possiamo vedere dal grafico, poco meno del 60% dei videogiochi calcistici è venduto in Europa permettendoci di rispondere parzialmente alla domanda posta all'inizio: gli europei sono fanatici del calcio.<br />
+In un certo senso è da dire che questa è una domanda abbastanza scontata considerato che il calcio è praticamente lo sport nazionale in quasi tutte le nazioni europee.
+
+Adesso passiamo alla terza domanda: Gli europei preferiscono la Playstation o la XBOX?
+
+Abbiamo visto che il calcio è molto importante per gli europei, ma stando a 4chan, anche la Playstation dovrebbe esserlo.<br />
+
+Per rispondere a questo analizzeremo i risultati delle console war delle ultime due generazioni videoludiche: Playstation 3 vs XBOX 360 e Playstation 4 vs XBOX One.
+
+Nota: in questa sottoanalisi verranno trascurati il PC e le console Nintendo: il primo risulterebbe sconfitto in partenza a causa delle scarse vendite per i motivi visti in precedenza, mentre le seconde in quanto mercato a se. Le console Nintendo a partire dall'uscita della Wii e del DS (stessa generazione della Playstation 3 e XBOX 360) hanno iniziato a puntare ad una clientela diversa da quella di Sony e Microsoft, magari interessata a possedere sia una console Nintendo che una Sony o Microsoft.
+
+```{r consoleWar, message=FALSE, warning = FALSE}
+# Calcoliamo le vendite delle console nei vari mercati
+vgPS <- vgsales %>%
+  group_by(Platform) %>%
+  summarise(Total_NA = sum(NA_Sales), Total_EU = sum(EU_Sales), 
+          Total_JP = sum(JP_Sales), Total_Other = sum(Other_Sales), Total_Sales = sum(Global_Sales))
+
+# Analizziamo la situazione durante la generazione Xbox360 e PS3. Calcoliamo il totale delle vendite di entrambe le console e vediamo quanto
+# un singolo mercato ha influito nel totale delle vendite
+vgPS%>%
+  filter(Platform == 'X360' | Platform == 'PS3') %>%
+  mutate(Total_Sales_All = sum(Total_Sales)) %>%
+  gather("Total_NA","Total_EU","Total_JP","Total_Other", key = Market_Zone, value = Sales_Number) %>%
+  mutate(perc = Sales_Number/Total_Sales_All * 100) %>%
+  ggplot(aes(x=Platform, y=perc, fill = Market_Zone)) + geom_bar(stat="identity",position = "dodge") + 
+  theme(axis.title = element_blank()) +
+  scale_fill_discrete(name = "Mercato", labels = c("Europa", "Giappone", "Nord America", "Altro")) +
+  labs(title = 'Divisione vendite PS3 e XBOX360')
+
+# Stesso discorso ma per Xbox One e PS4
+vgPS%>%
+  filter(Platform == 'XOne' | Platform == 'PS4') %>%
+  mutate(Total_Sales_All = sum(Total_Sales)) %>%
+  gather("Total_NA","Total_EU","Total_JP","Total_Other", key = Market_Zone, value = Sales_Number) %>%
+  mutate(perc = Sales_Number/Total_Sales_All * 100) %>%
+  ggplot(aes(x=Platform, y=perc, fill = Market_Zone)) + geom_bar(stat="identity",position = "dodge") +
+  theme(axis.title = element_blank()) +
+  scale_fill_discrete(name = "Mercato", labels = c("Europa", "Giappone", "Nord America", "Altro")) +
+  labs(title = 'Divisione vendite PS4 e XBOX One')
+
+```
+
+Questi due grafici ci offrono l'informazione che stavamo cercando, il pubblico europeo preferisce i videogiochi su console Sony.
+
+Mentre nella settima generazione la differenza percentuale di vendite tra le due console non era tanta, durante l'ottava le differenze si sono evidenziate favorendo la console Sony.
+
+Abbiamo visto che i giocatori europei apprezzano il calcio e le console Sony, questo però non risponde completamente alla nostra domanda. Nell'analisi dei videogiochi di calcio abbiamo visto i videogiochi sportivi in generale, senza guardare la console di rilascio.<br />
+Per poter rispondere completamente alla domanda "Qual'è il genere preferito dei giocatori Playstation europei?" ci basterà analizzare i gusti di questi giocatori
+
+```{r playstationEurope, message=FALSE, warning = FALSE}
+# Da questo grafico possiamo vedere che il genere sportivo è il secondo più apprezzato dal mercato europeo
+vgsales %>%
+  filter(str_detect(Platform, 'PS')) %>%
+  gather("NA_Sales","EU_Sales","JP_Sales","Other_Sales", key = Market_Zone, value = Sales_Number) %>%
+  filter(Market_Zone == "EU_Sales") %>%
+  ggplot(aes(x=Genre, y=Sales_Number)) + geom_bar(stat="identity",position = "dodge") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1), axis.title = element_blank()) +
+  labs(title = 'Generi acquistati dall\'utenza Playstation')
+
+```
+
+A quanto pare, contrariamente a quanto ci saremmo potuti aspettare stando a 4chan, il genere sportivo e di conseguenza quello calcistico, non è quello prevalente tra i giocatori Playstation europei.<br />
+Il primato spetta al genere action, che come abbiamo visto all'inizio è una categoria molto vasta raggruppando quindi al suo interno un numero di sottogeneri maggiore rispetto a quello sportivo.<br />
+Quindi l'osservazione fatta dagli utenti di 4chan risulta essere nient'altro che un'esagerazione rispetto ai dati di vendita.
+
+## Domanda n.4 : quali sono le serie che compaiono più volte tra i 1000 videgiochi più venduti
+
+Chi ha avuto più successo tra un cantante che ha venduto 1000000 di copie di un singolo disco e uno che ha venduto "solo" 100000 copie con 10 dischi diversi? La domanda che ci poniamo ora è la stessa, ma applicata ai videogiochi.
+
+Risponderemo a questa domanda utilizzando un algoritmo che sfrutta le operazioni di text mining legate agli n-grammi:
+
+- Prendiamo i titoli dei 1000 videogiochi più venduti
+
+- Otteniamo la lista dei monogrammi, bigrammi e trigrammi che compaiono almeno due volte tra i titoli (cosa ovvia, ma una serie di videogiochi deve almeno due titoli con una parte in comune del nome)
+
+- Rimuoviamo dalla lista dei bigrammi le coppie che compaiono come parte comune in un trigrammo
+
+- Facciamo la stessa operazione per i monogrammi che compaiono nella lista dei bigrammi
+
+Questo algoritmo riesce a darci un'idea generale del successo di una serie. Ha però un difetto: se una serie dovesse avere una sottoserie, viene privilegiata questa alla serie principale, sfalsando quindi il risultato finale.<br />
+Vedremo successivamente alcune serie che vengono penalizzate da questa limitazione.
+
+```{r series, message=FALSE, warning = FALSE}
+# Prendiamo i titoli dei 1000 videogiochi più venduti
+titles <- vgsalesTot %>% select(Name) %>% head(1000)
+
+# Prendiamo i monogrammi che compaiono almeno due volte
+serieUnaParola <- titles %>% 
+  unnest_tokens(bigram, Name, token = "ngrams", n = 1) %>% 
+  select(bigram) %>% 
+  count(bigram, sort=TRUE) %>% 
+  filter(n>=2) %>%
+  filter(!grepl("^[0-9]+$",bigram, perl = T)) # Tiriamo via le stringhe composte da soli numeri
+
+# Prendiamo i bigrammi che compaiono almeno due volte
+serieDueParola <- titles %>% 
+  unnest_tokens(bigram, Name, token = "ngrams", n = 2) %>% 
+  select(bigram) %>% 
+  count(bigram, sort=TRUE) %>% 
+  filter(n>=2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ")
+
+# Prendiamo i trigrammi che compaiono almeno due volte
+serieTreParola <- titles %>% 
+  unnest_tokens(bigram, Name, token = "ngrams", n = 3) %>% 
+  select(bigram) %>% count(bigram, sort=TRUE) %>% 
+  filter(n>=2) %>%
+  separate(bigram, c("word1", "word2","word3"), sep = " ")
+
+# Uniamo tutti i trigrammi in un'unica stringa
+serieTre <- serieTreParola %>%
+  unite(bigram, word1, word2, word3, sep = " ")
+
+# Controlliamo se il bigrammo è contenuto all'interno di un trigrammo
+# Per far ciò controlliamo se la parola 1 del bigrammo è uguale alla parola 1 o 2 del trigrammo e la parola 2 del bigrammo è uguale 
+# alla parola 2 o 3 del trigrammo
+# Eventuali bigrammi contenuti all'interno dei trigrammi verrano tolti dall'insieme delle serie
+serieDue <- serieDueParola %>%
+  filter(!(word1 %in% serieTreParola$word1 & word2 %in% serieTreParola$word2)) %>%
+  filter(!(word1 %in% serieTreParola$word2 & word2 %in% serieTreParola$word3)) %>%
+  unite(bigram, word1, word2, sep = " ")
+
+# Effettuiamo la stessa operazione ma con i monogrammi. Se la parola del monogrammo è uguale alla parola 1 o 2 del bigrammo verrà tolta 
+# dalla lista delle serie
+serieUna <- serieUnaParola %>%
+  filter(!bigram %in% serieDueParola$word1) %>%
+  filter(!bigram %in% serieDueParola$word2)
+
+# Parole da rimuovere dall'elenco delle serie in quanto non vogliono dire niente e compaiono tra i primi 30 risultati oppure sono doppioni
+words <- c("adventures", "version", "iv","edition","king","ds","your","the legend of","smackdown vs raw", "woods pga tour")
+
+# Otteniamo il grafico contenente le 20 serie più popolari 
+miglioriSerie <- rbind(serieUna, serieDue, serieTre) %>%
+  filter(!bigram %in% words) %>%
+  arrange(-n) %>%
+  head(20)
+
+miglioriSerie %>%
+  ggplot(aes(x=n, y=reorder(bigram, n))) + geom_bar(stat="identity", position = "dodge") +
+  theme(axis.title = element_blank()) +
+  labs(title = 'Serie videoludiche più importanti')
+
+```
+
+Da come possiamo vedere, Need for Speed è la serie di maggior successo, con ben 16 titoli che compaiono tra i 1000 videogiochi più venduti.<br />
+E' però da precisare che avere un alto numero di comparse nella lista non significa essere in automatico la serie col maggior numero di vendite. Questo risultato infatti non ci dice qual'è la serie di maggior successo in assoluto ma quella che ha avuto le vendite più in linea con i risultati precedenti.<br />
+Un esempio lo possiamo vedere in questa tabella:
+
+```{r venditeSerie, message=FALSE, warning = FALSE}
+
+nomiSerie <- miglioriSerie$bigram
+venditeSerie <- NULL
+
+ for(serie in nomiSerie)
+ {
+   vgaux <- vgsalesTot %>%
+     head(1000) %>%
+     filter(str_detect(tolower(Name), serie)) %>%
+     summarize(Name = serie, Total_Sales = sum(Total_Sales))
+   venditeSerie <- rbind(venditeSerie, vgaux)
+ }
+
+venditeSerie
+```
+
+Call of duty e Grand Theft Auto sono le serie con più vendite, ma hanno un numero di videogiochi minore rispetto a quello di Need for speed o The legend of Zelda.<br />
+Questo risultato lo possiamo attribuire all'uscita di videogiochi spin-off, videogiochi che appartengono ad una data serie, ma hanno meccaniche di gioco differenti. Questi tendono ad incrementare il numero di videogiochi realizzati di quella serie, ma hanno un volume di vendita inferiore rispetto agli altri titoli di quella principale.
+
+Tra i risultati visti in precedenza abbiamo, tra le 20 serie più importanti, alcune nate come spin-off, ma che col tempo hanno acquisito sempre più importanza distaccandosi dalla quella madre. Nel nostro caso queste sono Mario Kart e Mario Party nate come spin-off dalla serie Super Mario Bros.
+
+Inoltre come detto in precedenza abbiamo delle serie che sono state penalizzate dall'algoritmo, prime tra tutte la serie Pokèmon. Questa presenta numerosi spin-off, priorizzando questi alla serie principale.
+
+Uniamo queste due osservazioni con il grafico fatto in precedenza aggiungendo la ricerca manuale delle serie "Pokémon" e in onore alla console war degli anni 90 tra Nintendo e Sega le loro due mascotte "Mario" e "Sonic".
+
+```{r series2, message=FALSE, warning = FALSE}
+# Prendiamo i titoli di videogiochi della serie 'Mario'
+mario <- titles %>%
+  filter(str_detect(Name, 'Mario')) %>%
+  summarise(bigram = "mario", n=n())
+
+# Prendiamo i titoli di videogiochi della serie 'Sonic'
+sonic <- titles %>%
+  filter(str_detect(Name, 'Sonic')) %>%
+  summarise(bigram = "sonic", n=n())
+
+# Prendiamo i titoli di videogiochi della serie 'Pokémon'
+pokemon <- titles %>%
+  # Prendiamo sia quelli con la e accentata che quelli senza
+  filter(str_detect(Name, 'Pokémon') | str_detect(Name, 'Pokemon')) %>%
+  summarise(bigram = "pokémon", n=n())
+
+# Tiriamo via gli n-grammi che contengono le parole 'Mario', 'Sonic' e 'Pokemon' (con e senza accento)
+# Inseriamo successivamente i singoli risultati ottenuti in precedenza
+miglioriSerie2 <- rbind(serieUna, serieDue, serieTre) %>%
+  filter(!str_detect(bigram, 'mario')) %>%
+  filter(!str_detect(bigram, 'sonic')) %>%
+  filter(!str_detect(bigram, 'pokémon')) %>%
+  filter(!str_detect(bigram, 'pokemon')) %>%
+  rbind(mario, sonic, pokemon) %>%
+  filter(!bigram %in% words) %>%
+  arrange(-n) %>%
+  head(20)
+
+miglioriSerie2 %>%
+  ggplot(aes(x=n, y=reorder(bigram, n))) + geom_bar(stat="identity", position = "dodge") +
+  theme(axis.title = element_blank()) +
+  labs(title = 'Serie videoludiche più importanti')
+
+```
+
+Vediamo quindi, che dopo una ricerca manuale, tutte e tre le serie hanno ribaltato il risultato ottenuto in precedenza portandosi in testa della classifica.<br />
+Tra i due rivali quindi il vincitore risulta Mario, piazzando più del doppio di videogiochi di successo rispetto a Sonic, decretando quindi Nintendo come la vincitrice tra le due aziende.
+
+Possiamo infine vedere una eventuale classifica aprossimativa delle vendite di queste 20 serie sistemata in base alle osservazioni precedenti:
+
+```{r venditeSerie2, message=FALSE, warning = FALSE}
+
+nomiSerie <- miglioriSerie2$bigram
+nomiSerie <- gsub("é", "e", nomiSerie)
+venditeSerie2 <- NULL
+
+vgsalesTotFixed <- vgsalesTot
+vgsalesTotFixed$Name <- gsub("é", "e", vgsalesTot$Name)
+
+ for(serie in nomiSerie)
+ {
+   vgaux <- vgsalesTotFixed %>%
+     head(1000) %>%
+     filter(str_detect(tolower(Name), serie)) %>%
+     summarize(Name = serie, Total_Sales = sum(Total_Sales))
+   venditeSerie2 <- rbind(venditeSerie2, vgaux)
+ }
+
+venditeSerie2 %>%
+  arrange(-Total_Sales)
+```
+
+La cosa interessante di questa tabella è vedere che Pokemon non è nè al primo nè al secondo posto nonostante le elevate vendite di ogni gioco e all'importanza che ha nella cultura pop odierna. Questo ovviamente è dovuto al fatto che questa classifica non tiene conto di vendite di merchandise (come peluche, giocattoli, ecc.) facendo sottostimare serie che hanno una miglior fonte di guadagno in questi settori.
+
+## Conclusioni
+
+Il mercato videoludico è cambiato molto dagli anni '80 diventando sempre più di massa. Con l'evoluzione del pubblico anche le piattaforme di utilizzo si sono evolute.<br />
+Col passare degli anni, a causa dell'importanza sempre più alta di mercati emergenti quali la Cina, le piattaforme mobile sono diventate sempre più importanti. I dati presi in considerazione fin'ora non tengono conto di questo mercato in quanto tradizionalmente, i videogiochi vengono distribuiti gratuitamente con acquisti in-game facendo si che questi non vengano valutati in base alle vendite ma ai download.<br />
+E' a causa di questo quindi che non possiamo garantire l'utilità di un'analisi come questa per valutare i gusti dei videogiocatori futuri e di conseguenza il successo dei videogiochi che usciranno prossimamente.
